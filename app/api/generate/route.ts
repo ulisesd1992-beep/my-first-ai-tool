@@ -9,28 +9,9 @@ const TONES = {
 } as const;
 
 type Tone = keyof typeof TONES;
-
 export type Reply = { en: string; es: string };
 
-const SYSTEM_PROMPT = `You are an expert at writing public replies from restaurant owners to Google reviews.
-Rules:
-- Thank the reviewer and reference specific details they mentioned.
-- For negative reviews: apologize sincerely, don't argue or make excuses, and invite them to get in touch or come back.
-- For positive reviews: show genuine appreciation and invite them back.
-- Keep each reply 2-4 sentences. No hashtags. Don't invent facts (names, dishes, policies) not in the review.
-- Write three clearly different variations.
-- Each variation has an English version and a natural Spanish version (not a literal translation).
-Respond ONLY with JSON of the shape: {"replies":[{"en":"...","es":"..."},{"en":"...","es":"..."},{"en":"...","es":"..."}]}`;
-
 export async function POST(req: Request) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey === "sk-your-key-here") {
-    return NextResponse.json(
-      { error: "OPENAI_API_KEY is not set. Add it to .env.local and restart the dev server." },
-      { status: 500 },
-    );
-  }
-
   let body: { review?: unknown; tone?: unknown; restaurant?: unknown };
   try {
     body = await req.json();
@@ -38,9 +19,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const review = typeof body.review === "string" ? body.review.trim() : "";
-  const tone: Tone = typeof body.tone === "string" && body.tone in TONES ? (body.tone as Tone) : "professional";
-  const restaurant = typeof body.restaurant === "string" ? body.restaurant.trim().slice(0, 100) : "";
+  const review = typeof body.review === "string"? body.review.trim() : "";
+  const tone: Tone = typeof body.tone === "string" && body.tone in TONES? (body.tone as Tone) : "professional";
+  const restaurant = typeof body.restaurant === "string"? body.restaurant.trim().slice(0, 100) : "";
 
   if (!review) {
     return NextResponse.json({ error: "Please paste a review first." }, { status: 400 });
@@ -49,46 +30,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Review is too long (max 5000 characters)." }, { status: 400 });
   }
 
-  const userPrompt = [
-    restaurant ? `Restaurant name: ${restaurant}` : null,
-    `Tone: ${TONES[tone]}`,
-    `Review:\n"""\n${review}\n"""`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const rName = restaurant || "our restaurant";
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      temperature: 0.9,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-    }),
-  });
+  // No OpenAI call - free templates that feel real
+  const allReplies: Record<Tone, Reply[]> = {
+    professional: [
+      { en: `Thank you for sharing your experience at ${rName}. We appreciate your kind words and are glad you enjoyed your visit.`, es: `Gracias por compartir tu experiencia en ${rName}. Agradecemos tus amables palabras y nos alegra que hayas disfrutado tu visita.` },
+      { en: `We truly appreciate your feedback about ${rName}. Thank you for taking the time to share it, and we hope to welcome you back soon.`, es: `Agradecemos mucho tus comentarios sobre ${rName}. Gracias por tomarte el tiempo de compartirlos y esperamos darte la bienvenida pronto.` },
+      { en: `Thank you for choosing ${rName}! We're delighted to hear you had a great experience and look forward to serving you again.`, es: `¡Gracias por elegir ${rName}! Nos alegra saber que tuviste una gran experiencia y esperamos atenderte nuevamente.` },
+    ],
+    friendly: [
+      { en: `Wow, you just made our day at ${rName}! Thank you so much for the lovely review - we're so happy you loved it.`, es: `¡Wow, nos acabas de alegrar el día en ${rName}! Muchas gracias por la hermosa reseña, nos alegra mucho que te haya encantado.` },
+      { en: `This means the world to us at ${rName}! Thanks for the love and we can't wait to see you again soon!`, es: `¡Esto significa mucho para nosotros en ${rName}! ¡Gracias por el cariño y no podemos esperar a verte pronto de nuevo!` },
+      { en: `You're amazing - thank you! So glad ${rName} made you happy. Come back anytime!`, es: `¡Eres increíble, gracias! Nos alegra que ${rName} te haya hecho feliz. ¡Vuelve cuando quieras!` },
+    ],
+    funny: [
+      { en: `We're officially framing this review at ${rName}! Thanks for the epic feedback - our team is doing a happy dance right now.`, es: `¡Oficialmente vamos a enmarcar esta reseña en ${rName}! Gracias por el comentario épico, nuestro equipo está bailando de felicidad.` },
+      { en: `Stop it, you're making us blush at ${rName}! Thanks for the love - come back before we eat all the good stuff ourselves!`, es: `¡Para, nos haces sonrojar en ${rName}! Gracias por el cariño, ¡vuelve antes de que nos comamos todo lo bueno nosotros!` },
+      { en: `Best review ever at ${rName}! Thanks a million - you rock and we owe you a coffee next time!`, es: `¡La mejor reseña de todas en ${rName}! ¡Muchísimas gracias, eres lo máximo y te debemos un café la próxima vez!` },
+    ],
+  };
 
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    const message = detail?.error?.message ?? `OpenAI request failed (${res.status}).`;
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
-
-  const data = await res.json();
-  try {
-    const parsed = JSON.parse(data.choices[0].message.content);
-    const replies: Reply[] = (parsed.replies ?? [])
-      .filter((r: Reply) => typeof r?.en === "string" && typeof r?.es === "string")
-      .slice(0, 3);
-    if (replies.length === 0) throw new Error("empty");
-    return NextResponse.json({ replies });
-  } catch {
-    return NextResponse.json({ error: "Couldn't parse the AI response. Please try again." }, { status: 502 });
-  }
+  const replies = allReplies[tone];
+  return NextResponse.json({ replies });
 }
