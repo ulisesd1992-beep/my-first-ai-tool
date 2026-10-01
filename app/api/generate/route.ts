@@ -18,7 +18,7 @@ export async function POST(req: Request) {
   const restaurant = typeof body.restaurant === "string"? body.restaurant.trim().slice(0, 100) : "";
   if (!review) return NextResponse.json({ error: "Please paste a review first." }, { status: 400 });
   const prompt = `${SYSTEM_PROMPT}\n\n${restaurant? `Restaurant: ${restaurant}\n` : ""}Tone: ${TONES[tone]}\nReview:\n"""\n${review}\n"""`;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.9, responseMimeType: "application/json" } }),
   });
