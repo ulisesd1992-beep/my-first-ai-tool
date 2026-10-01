@@ -10,6 +10,11 @@ const TONES = {
 
 type Tone = keyof typeof TONES;
 
+interface ReplyPair {
+  en: string;
+  es: string;
+}
+
 export async function POST(req: Request) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
@@ -24,11 +29,15 @@ export async function POST(req: Request) {
   }
 
   let body: any;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  try { 
+    body = await req.json(); 
+  } catch { 
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); 
+  }
 
-  const review = typeof body.review === "string" ? body.review.trim() : "";
-  const tone: Tone = typeof body.tone === "string" && body.tone in TONES ? (body.tone as Tone) : "professional";
-  const restaurant = typeof body.restaurant === "string" ? body.restaurant.trim().slice(0, 100) : "";
+  const review = typeof body?.review === "string" ? body.review.trim() : "";
+  const tone: Tone = typeof body?.tone === "string" && body.tone in TONES ? (body.tone as Tone) : "professional";
+  const restaurant = typeof body?.restaurant === "string" ? body.restaurant.trim().slice(0, 100) : "";
 
   if (!review) {
     return NextResponse.json({
@@ -40,7 +49,6 @@ export async function POST(req: Request) {
     }, { status: 200 });
   }
 
-  // Instructing the AI to create paired English and Spanish variations
   const SYSTEM_PROMPT = "You are an expert at writing public replies from restaurant owners to Google reviews. Rules: Thank reviewer, reference details, apologize sincerely for negatives, show appreciation for positives. For each option, provide both an English version ('en') and a high-quality, professional Spanish translation ('es').";
   const prompt = `${SYSTEM_PROMPT}\n\nRestaurant: ${restaurant}\nTone: ${TONES[tone]}\n\nReview:\n"""\n${review}\n"""`;
 
@@ -53,7 +61,6 @@ export async function POST(req: Request) {
         generationConfig: { 
           temperature: 0.9, 
           responseMimeType: "application/json",
-          // Forces Gemini to output objects containing both 'en' and 'es' fields
           responseSchema: {
             type: "OBJECT",
             properties: {
@@ -62,12 +69,11 @@ export async function POST(req: Request) {
                 items: {
                   type: "OBJECT",
                   properties: {
-                    en: { type: "STRING", description: "The reply text written in English" },
-                    es: { type: "STRING", description: "The reply text written in Spanish" }
+                    en: { type: "STRING" },
+                    es: { type: "STRING" }
                   },
                   required: ["en", "es"]
-                },
-                description: "List of exactly 3 response pairings"
+                }
               }
             },
             required: ["replies"]
@@ -77,7 +83,7 @@ export async function POST(req: Request) {
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => null);
+      const err: any = await res.json().catch(() => null);
       const errMsg = err?.error?.message || `HTTP ${res.status}`;
       return NextResponse.json({
         replies: [
@@ -88,8 +94,8 @@ export async function POST(req: Request) {
       }, { status: 200 });
     }
 
-    const data = await res.json();
-    const text = data.candidates?.?.content?.parts?.?.text;
+    const data: any = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!text) {
       return NextResponse.json({
@@ -102,12 +108,14 @@ export async function POST(req: Request) {
     }
 
     const p = JSON.parse(text);
-    return NextResponse.json({ replies: (p.replies || []).slice(0, 3) });
+    const parsedReplies = Array.isArray(p?.replies) ? (p.replies as ReplyPair[]) : [];
+    
+    return NextResponse.json({ replies: parsedReplies.slice(0, 3) });
 
   } catch (e: any) {
     return NextResponse.json({
       replies: [
-        { en: `Internal Server Error: ${e.message || "Unknown error"}`, es: `Error interno del servidor: ${e.message || "Error desconocido"}` },
+        { en: `Internal Server Error: ${e?.message || "Unknown error"}`, es: `Error interno del servidor: ${e?.message || "Error desconocido"}` },
         { en: "Check your Netlify platform functions window.", es: "Revise la ventana de funciones de su plataforma Netlify." },
         { en: "Retry the request setup manually.", es: "Reintente la configuración de la solicitud manualmente." }
       ]
