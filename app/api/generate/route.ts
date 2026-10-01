@@ -13,18 +13,35 @@ type Tone = keyof typeof TONES;
 export async function POST(req: Request) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
-  if (!apiKey) return NextResponse.json({ replies: ["Error: GEMINI_API_KEY environment variable is not configured on Netlify."] }, { status: 200 });
+  if (!apiKey) {
+    return NextResponse.json({
+      replies: [
+        { en: "Error: GEMINI_API_KEY environment variable is not configured.", es: "Error: La variable de entorno GEMINI_API_KEY no está configurada." },
+        { en: "Please check your Netlify dashboard settings.", es: "Por favor verifique la configuración de su panel de Netlify." },
+        { en: "Ensure your API key is active.", es: "Asegúrese de que su clave API esté activa." }
+      ]
+    }, { status: 200 });
+  }
 
   let body: any;
-  try { body = await req.json(); } catch { return NextResponse.json({ replies: ["Error: Invalid JSON payload received."] }, { status: 200 }); }
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
 
   const review = typeof body.review === "string" ? body.review.trim() : "";
   const tone: Tone = typeof body.tone === "string" && body.tone in TONES ? (body.tone as Tone) : "professional";
   const restaurant = typeof body.restaurant === "string" ? body.restaurant.trim().slice(0, 100) : "";
 
-  if (!review) return NextResponse.json({ replies: ["Please paste a customer review text first."] }, { status: 200 });
+  if (!review) {
+    return NextResponse.json({
+      replies: [
+        { en: "Please paste a customer review first.", es: "Por favor, pegue una reseña de un cliente primero." },
+        { en: "The field cannot be blank.", es: "El campo no puede estar vacío." },
+        { en: "Type something to generate a reply.", es: "Escriba algo para generar una respuesta." }
+      ]
+    }, { status: 200 });
+  }
 
-  const SYSTEM_PROMPT = "You are an expert at writing public replies from restaurant owners to Google reviews. Rules: Thank reviewer, reference details, apologize sincerely for negatives, show appreciation for positives.";
+  // Instructing the AI to create paired English and Spanish variations
+  const SYSTEM_PROMPT = "You are an expert at writing public replies from restaurant owners to Google reviews. Rules: Thank reviewer, reference details, apologize sincerely for negatives, show appreciation for positives. For each option, provide both an English version ('en') and a high-quality, professional Spanish translation ('es').";
   const prompt = `${SYSTEM_PROMPT}\n\nRestaurant: ${restaurant}\nTone: ${TONES[tone]}\n\nReview:\n"""\n${review}\n"""`;
 
   try {
@@ -36,14 +53,21 @@ export async function POST(req: Request) {
         generationConfig: { 
           temperature: 0.9, 
           responseMimeType: "application/json",
-          // FORCE the Gemini engine to output your exact JSON shape
+          // Forces Gemini to output objects containing both 'en' and 'es' fields
           responseSchema: {
             type: "OBJECT",
             properties: {
               replies: {
                 type: "ARRAY",
-                items: { type: "STRING" },
-                description: "List of 3 generated review replies"
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    en: { type: "STRING", description: "The reply text written in English" },
+                    es: { type: "STRING", description: "The reply text written in Spanish" }
+                  },
+                  required: ["en", "es"]
+                },
+                description: "List of exactly 3 response pairings"
               }
             },
             required: ["replies"]
@@ -55,20 +79,38 @@ export async function POST(req: Request) {
     if (!res.ok) {
       const err = await res.json().catch(() => null);
       const errMsg = err?.error?.message || `HTTP ${res.status}`;
-      return NextResponse.json({ replies: [`API Error: ${errMsg}`, "Please check your Gemini API key restrictions.", "Ensure your billing or tier limit isn't exceeded."] }, { status: 200 });
+      return NextResponse.json({
+        replies: [
+          { en: `API Error: ${errMsg}`, es: `Error de API: ${errMsg}` },
+          { en: "Please check your Gemini project credentials.", es: "Por favor revise las credenciales de su proyecto Gemini." },
+          { en: "Verify billing status or limits.", es: "Verifique el estado de facturación o los límites." }
+        ]
+      }, { status: 200 });
     }
 
     const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text = data.candidates?.?.content?.parts?.?.text;
 
     if (!text) {
-      return NextResponse.json({ replies: ["Error: Received empty text from AI.", "Try submitting again.", "Verify your prompt context."] }, { status: 200 });
+      return NextResponse.json({
+        replies: [
+          { en: "Received an empty string response from the AI.", es: "Se recibió una respuesta de cadena vacía de la IA." },
+          { en: "Please try submitting the form again.", es: "Por favor, intente enviar el formulario de nuevo." },
+          { en: "Review your input text parameters.", es: "Revise los parámetros de su texto de entrada." }
+        ]
+      }, { status: 200 });
     }
 
     const p = JSON.parse(text);
     return NextResponse.json({ replies: (p.replies || []).slice(0, 3) });
 
   } catch (e: any) {
-    return NextResponse.json({ replies: [`Server Error: ${e.message || "Unknown internal error"}`, "Check your Netlify function logs.", "Retry the generation process."] }, { status: 200 });
+    return NextResponse.json({
+      replies: [
+        { en: `Internal Server Error: ${e.message || "Unknown error"}`, es: `Error interno del servidor: ${e.message || "Error desconocido"}` },
+        { en: "Check your Netlify platform functions window.", es: "Revise la ventana de funciones de su plataforma Netlify." },
+        { en: "Retry the request setup manually.", es: "Reintente la configuración de la solicitud manualmente." }
+      ]
+    }, { status: 200 });
   }
 }
