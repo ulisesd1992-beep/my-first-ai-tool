@@ -62,4 +62,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Parse failed" }, { status: 502 });
   }
 }
-
