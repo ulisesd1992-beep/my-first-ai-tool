@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import https from "https";
 
 export const runtime = "nodejs";
 
@@ -10,15 +11,71 @@ const TONES = {
 
 type Tone = keyof typeof TONES;
 
+// Native helper to bypass Netlify fetch network proxy restrictions
+function requestAI(apiKey: string, promptData: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: promptData }] }],
+      generationConfig: {
+        temperature: 0.9,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            replies: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  en: { type: "STRING" },
+                  es: { type: "STRING" }
+                },
+                required: ["en", "es"]
+              }
+            }
+          },
+          required: ["replies"]
+        }
+      }
+    });
+
+    const req = https.request(
+      `https://googleapis.com{apiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let chunkData = "";
+        res.on("data", (chunk) => { chunkData += chunk; });
+        res.on("end", () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(chunkData);
+          } else {
+            reject(new Error(`Status ${res.statusCode}: ${chunkData}`));
+          }
+        });
+      }
+    );
+
+    req.on("error", (err) => reject(err));
+    req.write(payload);
+    req.end();
+  });
+}
+
 export async function POST(req: Request) {
   const apiKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
 
   if (!apiKey) {
     return NextResponse.json({
       replies: [
-        { en: "Setup Error: GEMINI_API_KEY is missing in your Netlify Environment Variables.", es: "Error: Falta GEMINI_API_KEY en Netlify." },
-        { en: "Please add your key in the Netlify site dashboard.", es: "Por favor agregue su clave en el panel de Netlify." },
-        { en: "Then trigger a fresh production deployment.", es: "Luego active un nuevo despliegue de producción." }
+        { en: "Setup Error: GEMINI_API_KEY is missing on Netlify environment variables.", es: "Error: Falta GEMINI_API_KEY en variables de entorno." },
+        { en: "Please configure your environment variables.", es: "Configure sus variables de entorno." },
+        { en: "Trigger a fresh deployment afterwards.", es: "Active un nuevo despliegue después." }
       ]
     }, { status: 200 });
   }
@@ -44,50 +101,8 @@ export async function POST(req: Request) {
   const prompt = `${SYSTEM_PROMPT}\n\nRestaurant: ${restaurant}\nTone: ${TONES[tone]}\n\nReview:\n"""\n${review}\n"""`;
 
   try {
-    const res = await fetch(`https://googleapis.com{apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { 
-          temperature: 0.9, 
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              replies: {
-                type: "ARRAY",
-                items: {
-                  type: "OBJECT",
-                  properties: {
-                    en: { type: "STRING" },
-                    es: { type: "STRING" }
-                  },
-                  required: ["en", "es"]
-                }
-              }
-            },
-            required: ["replies"]
-          }
-        }
-      })
-    });
-
-    if (!res.ok) {
-      const err: any = await res.json().catch(() => null);
-      const errMsg = err?.error?.message || `HTTP ${res.status}`;
-      return NextResponse.json({
-        replies: [
-          { en: `Gemini API Denied: ${errMsg}`, es: `API de Gemini Rechazada: ${errMsg}` },
-          { en: "Check your API key restrictions inside Google AI Studio.", es: "Verifique las restricciones de su clave en Google AI Studio." },
-          { en: "Verify your free usage limits are active.", es: "Verifique que sus límites de uso estén activos." }
-        ]
-      }, { status: 200 });
-    }
-
-    const data: any = await res.json();
-    
-    // TYPO FIXED: Clean safe path navigation
+    const rawResponse = await requestAI(apiKey, prompt);
+    const data = JSON.parse(rawResponse);
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!text) {
@@ -100,15 +115,15 @@ export async function POST(req: Request) {
       }, { status: 200 });
     }
 
-    const p = JSON.parse(text);
-    return NextResponse.json({ replies: (p?.replies || []).slice(0, 3) });
+    const parsedJson = JSON.parse(text);
+    return NextResponse.json({ replies: (parsedJson?.replies || []).slice(0, 3) });
 
   } catch (e: any) {
     return NextResponse.json({
       replies: [
-        { en: `App Exception: ${e?.message || "Unknown error"}`, es: `Excepción: ${e?.message || "Error desconocido"}` },
-        { en: "Ensure your environments match across standard systems.", es: "Asegúrese de la consistencia de los entornos." },
-        { en: "Reload window and retry again.", es: "Recargue la ventana y vuelva a intentarlo." }
+        { en: `Network Connection Error: ${e?.message || "Internal failure"}`, es: `Error de conexión: ${e?.message || "Fallo interno"}` },
+        { en: "Check your Netlify outbound network security rules.", es: "Revise las reglas de red de Netlify." },
+        { en: "Verify your API billing tier setup.", es: "Verifique su plan de facturación de la API." }
       ]
     }, { status: 200 });
   }
