@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import https from "https";
 
 export const runtime = "nodejs";
 
@@ -11,56 +10,21 @@ const TONES = {
 
 type Tone = keyof typeof TONES;
 
-// Safe helper function to perform the POST request using Node's native HTTPS module
-function nativeHttpsPost(url: string, body: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk) => { data += chunk; });
-        res.on("end", () => {
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(data);
-          } else {
-            reject(new Error(`HTTP status ${res.statusCode}: ${data}`));
-          }
-        });
-      }
-    );
-
-    req.on("error", (err) => { reject(err); });
-    req.write(body);
-    req.end();
-  });
-}
-
 export async function POST(req: Request) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 
-  if (!apiKey) {
+  if (!apiKey || apiKey.trim() === "") {
     return NextResponse.json({
       replies: [
-        { en: "Error: GEMINI_API_KEY environment variable is not configured.", es: "Error: La variable de entorno GEMINI_API_KEY no está configurada." },
-        { en: "Please check your Netlify dashboard settings.", es: "Por favor verifique la configuración de su panel de Netlify." },
-        { en: "Ensure your API key is active.", es: "Asegúrese de que su clave API esté activa." }
+        { en: "Setup Error: GEMINI_API_KEY is missing in your Netlify Environment Variables settings.", es: "Error de configuración: falta GEMINI_API_KEY en la configuración de Netlify." },
+        { en: "Go to Netlify Dashboard -> Site Configuration -> Environment Variables to add it.", es: "Vaya al Panel de Netlify -> Configuración del sitio -> Variables de entorno para agregarlo." },
+        { en: "Ensure you trigger a fresh deployment after saving your key values.", es: "Asegúrese de activar un nuevo despliegue después de guardar los valores de su clave." }
       ]
     }, { status: 200 });
   }
 
   let body: any;
-  try { 
-    body = await req.json(); 
-  } catch { 
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); 
-  }
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
 
   const review = typeof body?.review === "string" ? body.review.trim() : "";
   const tone: Tone = typeof body?.tone === "string" && body.tone in TONES ? (body.tone as Tone) : "professional";
@@ -79,59 +43,73 @@ export async function POST(req: Request) {
   const SYSTEM_PROMPT = "You are an expert at writing public replies from restaurant owners to Google reviews. Rules: Thank reviewer, reference details, apologize sincerely for negatives, show appreciation for positives. For each option, provide both an English version ('en') and a high-quality, professional Spanish translation ('es').";
   const prompt = `${SYSTEM_PROMPT}\n\nRestaurant: ${restaurant}\nTone: ${TONES[tone]}\n\nReview:\n"""\n${review}\n"""`;
 
-  const requestBody = JSON.stringify({
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { 
-      temperature: 0.9, 
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: "OBJECT",
-        properties: {
-          replies: {
-            type: "ARRAY",
-            items: {
-              type: "OBJECT",
-              properties: {
-                en: { type: "STRING" },
-                es: { type: "STRING" }
-              },
-              required: ["en", "es"]
-            }
-          }
-        },
-        required: ["replies"]
-      }
-    }
-  });
-
   try {
-    const apiUrl = `https://googleapis.com{apiKey}`;
-    const responseText = await nativeHttpsPost(apiUrl, requestBody);
+    const targetUrl = new URL("https://googleapis.com");
+    targetUrl.searchParams.set("key", apiKey.trim());
 
-    const data = JSON.parse(responseText);
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const res = await fetch(targetUrl.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { 
+          temperature: 0.9, 
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              replies: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    en: { type: "STRING" },
+                    es: { type: "STRING" }
+                  },
+                  required: ["en", "es"]
+                }
+              }
+            },
+            required: ["replies"]
+          }
+        }
+      })
+    });
+
+    if (!res.ok) {
+      const err: any = await res.json().catch(() => null);
+      const errMsg = err?.error?.message || `HTTP ${res.status}`;
+      return NextResponse.json({
+        replies: [
+          { en: `Gemini API Denied Request: ${errMsg}`, es: `La API de Gemini rechazó la solicitud: ${errMsg}` },
+          { en: "Verify your API Key permissions and project restrictions inside Google AI Studio.", es: "Verifique los permisos de su clave API y las restricciones del proyecto en Google AI Studio." },
+          { en: "Check if your payment profile or free usage tier limits have expired.", es: "Compruebe si su perfil de pago o los límites del nivel de uso gratuito han expirado." }
+        ]
+      }, { status: 200 });
+    }
+
+    const data: any = await res.json();
+    const text = data?.candidates?.?.content?.parts?.?.text;
 
     if (!text) {
       return NextResponse.json({
         replies: [
-          { en: "Received an empty string response from the AI backend.", es: "Se recibió una respuesta vacía del backend de IA." },
-          { en: "Please try submitting the form again.", es: "Por favor, intente enviar el formulario de nuevo." },
-          { en: "Review your input text parameters.", es: "Revise los parámetros de su texto de entrada." }
+          { en: "Empty data layout received from model configuration.", es: "Se recibió un diseño de datos vacío de la configuración del modelo." },
+          { en: "Please retry your submission directly.", es: "Por favor, reintente su envío directamente." },
+          { en: "Review input parameters if this error persists.", es: "Revise los parámetros de entrada si este error persiste." }
         ]
       }, { status: 200 });
     }
 
     const p = JSON.parse(text);
-    const parsedReplies = Array.isArray(p?.replies) ? p.replies : [];
-    
-    return NextResponse.json({ replies: parsedReplies.slice(0, 3) });
+    return NextResponse.json({ replies: (p?.replies || []).slice(0, 3) });
 
   } catch (e: any) {
     return NextResponse.json({
       replies: [
-        { en: `Network Connection Error: ${e?.message || "Unknown proxy failure"}`, es: `Error de conexión de red: ${e?.message || "Fallo proxy desconocido"}` },
-        { en: "Verify that Netlify outbound connection ports aren't blocked.", es: "Verifique que los puertos de conexión de Netlify no estén bloqueados." },
-        { en: "Confirm your Gemini API key status and billing limits.", es: "Confirme el estado de su clave API de Gemini y sus límites de facturación." }
+        { en: `App Exception Encountered: ${e?.message || "Unknown error context"}`, es: `Se encontró una excepción en la aplicación: ${e?.message || "Contexto de error desconocido"}` },
+        { en: "Ensure your runtime environments match across standard systems.", es: "Asegúrese de que sus entornos de ejecución coincidan en los sistemas estándar." },
+        { en: "Retry generating responses in a fresh dashboard window.", es: "Reintente generar respuestas en una ventana nueva del panel." }
       ]
     }, { status: 200 });
   }
